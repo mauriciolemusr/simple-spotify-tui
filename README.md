@@ -47,6 +47,7 @@ spotify-tui
 
 - Spotify Premium account
 - Python 3.11+
+- Linux or macOS
 - A Spotify Connect device running somewhere (desktop app, phone, web player, spotifyd, etc.)
 
 ## License
