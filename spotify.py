@@ -39,11 +39,19 @@ def get_spotify() -> spotipy.Spotify:
 
 def pick_device(sp: spotipy.Spotify) -> tuple[str, str]:
     """List Spotify Connect devices and let the user choose. Returns (device_id, device_name)."""
-    try:
-        devices = sp.devices().get("devices", [])
-    except Exception as e:
-        print(f"ERROR: Could not fetch devices: {e}")
-        raise SystemExit(1)
+    devices = []
+    for attempt in range(6):
+        try:
+            devices = sp.devices().get("devices", [])
+        except Exception as e:
+            if attempt == 5:
+                print(f"ERROR: Could not fetch devices: {e}")
+                raise SystemExit(1)
+        if devices:
+            break
+        if attempt < 5:
+            print(f"  Waiting for devices... ({attempt + 1}/5)")
+            time.sleep(2)
 
     if not devices:
         print("ERROR: No Spotify Connect devices found.")

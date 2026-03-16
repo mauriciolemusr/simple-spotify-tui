@@ -5,9 +5,9 @@ import sys
 
 def setup():
     """Interactive first-time configuration wizard."""
-    from spotify import CONFIG_DIR
-
-    env_file = CONFIG_DIR / ".env"
+    from pathlib import Path
+    config_dir = Path.home() / ".config" / "spotify-tui"
+    env_file = config_dir / ".env"
 
     print()
     print("  spotify-tui setup")
@@ -28,7 +28,7 @@ def setup():
         print("  Client Secret is required.")
         sys.exit(1)
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
     env_file.write_text(
         f"SPOTIPY_CLIENT_ID={client_id}\n"
         f"SPOTIPY_CLIENT_SECRET={client_secret}\n"
@@ -38,8 +38,10 @@ def setup():
     print(f"  Config saved to {env_file}")
     print()
 
-    # Trigger OAuth flow
+    # Load env BEFORE importing spotify (which runs load_dotenv at module level)
     print("  Opening browser for Spotify authorization...")
+    from dotenv import load_dotenv
+    load_dotenv(env_file, override=True)
     import spotify
     spotify.get_spotify()
 
@@ -64,8 +66,8 @@ def cli():
         return
 
     # Check if config exists, auto-run setup if missing
-    from spotify import CONFIG_DIR
-    env_file = CONFIG_DIR / ".env"
+    from pathlib import Path
+    env_file = Path.home() / ".config" / "spotify-tui" / ".env"
     if not env_file.exists():
         print("  No config found. Running first-time setup...\n")
         setup()
