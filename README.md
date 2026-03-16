@@ -7,24 +7,22 @@ A terminal UI for controlling Spotify.
 ## Install
 
 ```
-pipx install .
-# or
-pip install .
+pipx install git+https://github.com/mauriciolemusr/simple-spotify-tui.git
 ```
 
-## Setup
+Or with pip:
 
 ```
-spotify-tui setup
+pip install git+https://github.com/mauriciolemusr/simple-spotify-tui.git
 ```
-
-Walks you through creating a Spotify app and authorizing access.
 
 ## Usage
 
 ```
 spotify-tui
 ```
+
+On first run you'll be walked through creating a Spotify app and authorizing access.
 
 ## Keybindings
 
