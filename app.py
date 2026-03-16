@@ -1,6 +1,7 @@
 """Spotify TUI — Textual-based terminal controller."""
 
 import json
+import time
 
 import spotify
 
@@ -17,8 +18,8 @@ def _load_prefs() -> dict:
 
 
 def _save_prefs(prefs: dict) -> None:
-    spotify.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     _PREFS_FILE.write_text(json.dumps(prefs))
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -49,7 +50,7 @@ class SpotifyApp(App):
         width: 30;
         border-right: solid $primary-background;
     }
-    #sidebar-header {
+    #sidebar-header, #track-header {
         height: 1;
         padding: 0 1;
         text-style: bold;
@@ -67,13 +68,6 @@ class SpotifyApp(App):
     }
     #search-input.visible {
         display: block;
-    }
-    #track-header {
-        height: 1;
-        padding: 0 1;
-        text-style: bold;
-        color: $text;
-        background: $surface;
     }
     #track-table {
         height: 1fr;
@@ -105,17 +99,13 @@ class SpotifyApp(App):
         self._tracks: list[dict] = []
         self._context_uri: str | None = None
         # Now-playing state
-        self._current_track_name: str = ""
-        self._current_track_artist: str = ""
-        self._current_track_uri: str = ""
-        self._current_track_id: str = ""
+        self._current: dict = {}
         self._progress_ms: int = 0
         self._duration_ms: int = 0
         self._is_playing: bool = False
         self._volume: int = 50
         self._shuffle: bool = False
         self._repeat: str = "off"
-        self._liked: bool = False
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -167,37 +157,30 @@ class SpotifyApp(App):
         if idx is None:
             return
         if idx == 0:
-            self._load_liked()
+            self._load_tracks("Liked Songs", None, spotify.fetch_liked_tracks)
         else:
             pl = self._playlists[idx - 1]
-            self._load_playlist_tracks(pl["id"], pl["name"], pl["total"])
+            self._load_tracks(
+                pl["name"],
+                f"spotify:playlist:{pl['id']}",
+                spotify.fetch_playlist_tracks,
+                playlist_id=pl["id"],
+            )
 
     # ── Track loading ─────────────────────────────────────────────────
 
     @work(thread=True, exclusive=True, group="api")
-    def _load_playlist_tracks(self, playlist_id: str, name: str, total: int) -> None:
-        context_uri = f"spotify:playlist:{playlist_id}"
+    def _load_tracks(self, name: str, context_uri: str | None, fetch_fn, **kw) -> None:
         self.call_from_thread(self._begin_track_load, name, context_uri)
         try:
-            spotify.fetch_playlist_tracks(
-                self._sp, playlist_id,
+            fetch_fn(
+                self._sp,
                 on_page=lambda batch: self.call_from_thread(self._append_tracks, batch),
+                **kw,
             )
             self.call_from_thread(self._finish_track_load, name)
         except Exception as e:
             self.call_from_thread(self.notify, f"Failed to load tracks: {e}", severity="error")
-
-    @work(thread=True, exclusive=True, group="api")
-    def _load_liked(self) -> None:
-        self.call_from_thread(self._begin_track_load, "Liked Songs", None)
-        try:
-            spotify.fetch_liked_tracks(
-                self._sp,
-                on_page=lambda batch: self.call_from_thread(self._append_tracks, batch),
-            )
-            self.call_from_thread(self._finish_track_load, "Liked Songs")
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Failed to load liked songs: {e}", severity="error")
 
     def _begin_track_load(self, name: str, context_uri: str | None) -> None:
         self._tracks = []
@@ -243,7 +226,6 @@ class SpotifyApp(App):
     def _start_playback_for_track(self, track: dict) -> None:
         if self._context_uri:
             spotify.api_call(
-                self._sp,
                 self._sp.start_playback,
                 device_id=self._device_id,
                 context_uri=self._context_uri,
@@ -265,7 +247,6 @@ class SpotifyApp(App):
             window = all_uris[start:end]
             offset_in_window = idx - start
             spotify.api_call(
-                self._sp,
                 self._sp.start_playback,
                 device_id=self._device_id,
                 uris=window,
@@ -273,10 +254,7 @@ class SpotifyApp(App):
             )
 
     def _on_track_started(self, track: dict) -> None:
-        self._current_track_name = track["name"]
-        self._current_track_artist = track["artist"]
-        self._current_track_uri = track["uri"]
-        self._current_track_id = track["id"]
+        self._current = track
         self._progress_ms = 0
         self._duration_ms = track["duration_ms"]
         self._is_playing = True
@@ -299,15 +277,9 @@ class SpotifyApp(App):
             pass  # Silent — poll will retry in 5s
 
     def _on_playback_polled(self, pb: dict) -> None:
-        item = pb["item"]
-        self._current_track_name = item.get("name", "")
-        self._current_track_artist = ", ".join(
-            a["name"] for a in item.get("artists", [])
-        )
-        self._current_track_uri = item.get("uri", "")
-        self._current_track_id = item.get("id", "")
+        self._current = spotify.parse_tracks([pb["item"]], wrapper_key=None)[0]
         self._progress_ms = pb.get("progress_ms", 0)
-        self._duration_ms = item.get("duration_ms", 0)
+        self._duration_ms = self._current.get("duration_ms", 0)
         self._is_playing = pb.get("is_playing", False)
         self._volume = pb.get("device", {}).get("volume_percent", 50)
         self._shuffle = pb.get("shuffle_state", False)
@@ -315,7 +287,7 @@ class SpotifyApp(App):
         self._render_now_playing()
 
     def _render_now_playing(self) -> None:
-        if not self._current_track_name:
+        if not self._current.get("name"):
             self.query_one("#now-playing", NowPlaying).update(
                 "[dim]No track playing[/]"
             )
@@ -335,26 +307,23 @@ class SpotifyApp(App):
         rep_map = {"off": "[dim]↻[/]", "context": "[green]↻ all[/]", "track": "[green]↻ one[/]"}
         rep = rep_map.get(self._repeat, "[dim]↻[/]")
 
-        line1 = f" {icon} [bold]{self._current_track_name}[/] — {self._current_track_artist}"
+        line1 = f" {icon} [bold]{self._current['name']}[/] — {self._current['artist']}"
         line2 = f" [dim]{elapsed}[/] {bar} [dim]{total}[/]   Vol {self._volume}%  {shuf}  {rep}"
         self.query_one("#now-playing", NowPlaying).update(f"{line1}\n{line2}")
 
     # ── Key bindings ──────────────────────────────────────────────────
 
-    def action_toggle_play(self) -> None:
-        self._do_toggle_play()
-
     @work(thread=True, exclusive=True, group="transport")
-    def _do_toggle_play(self) -> None:
+    def action_toggle_play(self) -> None:
         try:
             if self._is_playing:
                 spotify.api_call(
-                    self._sp, self._sp.pause_playback, device_id=self._device_id
+                    self._sp.pause_playback, device_id=self._device_id
                 )
                 self.call_from_thread(self._set_playing, False)
             else:
                 spotify.api_call(
-                    self._sp, self._sp.start_playback, device_id=self._device_id
+                    self._sp.start_playback, device_id=self._device_id
                 )
                 self.call_from_thread(self._set_playing, True)
         except spotipy.SpotifyException as e:
@@ -365,32 +334,15 @@ class SpotifyApp(App):
         self._render_now_playing()
 
     def action_next_track(self) -> None:
-        self._do_next_track()
-
-    @work(thread=True, exclusive=True, group="transport")
-    def _do_next_track(self) -> None:
-        try:
-            spotify.api_call(
-                self._sp, self._sp.next_track, device_id=self._device_id
-            )
-            import time
-            time.sleep(0.5)
-            pb = spotify.fetch_playback(self._sp)
-            if pb:
-                self.call_from_thread(self._on_playback_polled, pb)
-        except spotipy.SpotifyException as e:
-            self.call_from_thread(self._handle_api_error, e)
+        self._do_skip(self._sp.next_track)
 
     def action_prev_track(self) -> None:
-        self._do_prev_track()
+        self._do_skip(self._sp.previous_track)
 
     @work(thread=True, exclusive=True, group="transport")
-    def _do_prev_track(self) -> None:
+    def _do_skip(self, fn) -> None:
         try:
-            spotify.api_call(
-                self._sp, self._sp.previous_track, device_id=self._device_id
-            )
-            import time
+            spotify.api_call(fn, device_id=self._device_id)
             time.sleep(0.5)
             pb = spotify.fetch_playback(self._sp)
             if pb:
@@ -409,7 +361,7 @@ class SpotifyApp(App):
         new_vol = max(0, min(100, self._volume + delta))
         try:
             spotify.api_call(
-                self._sp, self._sp.volume, new_vol, device_id=self._device_id
+                self._sp.volume, new_vol, device_id=self._device_id
             )
             self.call_from_thread(self._set_volume, new_vol)
         except spotipy.SpotifyException as e:
@@ -419,33 +371,28 @@ class SpotifyApp(App):
         self._volume = vol
         self._render_now_playing()
 
-    def action_toggle_like(self) -> None:
-        self._do_toggle_like()
-
     @work(thread=True, exclusive=True, group="api")
-    def _do_toggle_like(self) -> None:
-        if not self._current_track_id:
+    def action_toggle_like(self) -> None:
+        if not self._current.get("id"):
             return
+        track_id = self._current["id"]
         try:
             liked = spotify.api_call(
-                self._sp,
                 self._sp.current_user_saved_tracks_contains,
-                tracks=[self._current_track_id],
+                tracks=[track_id],
             )
             if liked and liked[0]:
                 spotify.api_call(
-                    self._sp,
                     self._sp.current_user_saved_tracks_delete,
-                    tracks=[self._current_track_id],
+                    tracks=[track_id],
                 )
                 self.call_from_thread(
                     self.notify, "Removed from library", severity="information"
                 )
             else:
                 spotify.api_call(
-                    self._sp,
                     self._sp.current_user_saved_tracks_add,
-                    tracks=[self._current_track_id],
+                    tracks=[track_id],
                 )
                 self.call_from_thread(
                     self.notify, "Saved to library ♥", severity="information"
@@ -453,15 +400,12 @@ class SpotifyApp(App):
         except spotipy.SpotifyException as e:
             self.call_from_thread(self._handle_api_error, e)
 
-    def action_toggle_shuffle(self) -> None:
-        self._do_toggle_shuffle()
-
     @work(thread=True, exclusive=True, group="api")
-    def _do_toggle_shuffle(self) -> None:
+    def action_toggle_shuffle(self) -> None:
         new_state = not self._shuffle
         try:
             spotify.api_call(
-                self._sp, self._sp.shuffle, new_state, device_id=self._device_id
+                self._sp.shuffle, new_state, device_id=self._device_id
             )
             self.call_from_thread(self._set_shuffle, new_state)
         except spotipy.SpotifyException as e:
@@ -473,16 +417,13 @@ class SpotifyApp(App):
         self.notify(f"Shuffle {label}")
         self._render_now_playing()
 
-    def action_cycle_repeat(self) -> None:
-        self._do_cycle_repeat()
-
     @work(thread=True, exclusive=True, group="api")
-    def _do_cycle_repeat(self) -> None:
+    def action_cycle_repeat(self) -> None:
         cycle = {"off": "context", "context": "track", "track": "off"}
         new_state = cycle.get(self._repeat, "off")
         try:
             spotify.api_call(
-                self._sp, self._sp.repeat, new_state, device_id=self._device_id
+                self._sp.repeat, new_state, device_id=self._device_id
             )
             self.call_from_thread(self._set_repeat, new_state)
         except spotipy.SpotifyException as e:
@@ -504,17 +445,7 @@ class SpotifyApp(App):
         prefs["theme"] = self.theme
         _save_prefs(prefs)
         t = self.available_themes[self.theme]
-        colors = []
-        for name, val in [
-            ("pri", t.primary),
-            ("sec", t.secondary),
-            ("acc", t.accent),
-            ("suc", t.success),
-            ("warn", t.warning),
-            ("err", t.error),
-        ]:
-            if val:
-                colors.append(f"[{val}]██[/] {name}")
+        colors = [f"[{val}]██[/] {name}" for name, val in [("pri", t.primary), ("sec", t.secondary), ("acc", t.accent), ("suc", t.success), ("warn", t.warning), ("err", t.error)] if val]
         swatch = "  ".join(colors) if colors else ""
         mode = "dark" if t.dark else "light"
         self.notify(f"{self.theme} ({mode})\n{swatch}", timeout=3)
@@ -587,8 +518,6 @@ class SpotifyApp(App):
 
     @work(thread=True, exclusive=True, group="reconnect")
     def _reconnect_device(self) -> None:
-        import time
-
         for _ in range(8):
             try:
                 devices = self._sp.devices().get("devices", [])

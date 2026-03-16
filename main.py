@@ -2,8 +2,6 @@
 
 import argparse
 import sys
-from pathlib import Path
-
 
 def setup():
     """Interactive first-time configuration wizard."""

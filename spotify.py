@@ -1,11 +1,10 @@
 """Spotify API layer — thin wrappers around spotipy for the TUI."""
 
-import os
-import sys
 import time
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "spotify-tui"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 from dotenv import load_dotenv
 
@@ -28,7 +27,6 @@ SCOPE = (
 
 
 def get_spotify() -> spotipy.Spotify:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     cache_handler = CacheFileHandler(cache_path=str(CONFIG_DIR / ".cache"))
     auth = SpotifyOAuth(scope=SCOPE, open_browser=True, cache_handler=cache_handler)
     sp = spotipy.Spotify(auth_manager=auth, retries=0)
@@ -45,12 +43,12 @@ def pick_device(sp: spotipy.Spotify) -> tuple[str, str]:
         devices = sp.devices().get("devices", [])
     except Exception as e:
         print(f"ERROR: Could not fetch devices: {e}")
-        sys.exit(1)
+        raise SystemExit(1)
 
     if not devices:
         print("ERROR: No Spotify Connect devices found.")
         print("Make sure you have Spotify open on a device (phone, desktop, web player, spotifyd, etc.)")
-        sys.exit(1)
+        raise SystemExit(1)
 
     if len(devices) == 1:
         d = devices[0]
@@ -74,7 +72,7 @@ def pick_device(sp: spotipy.Spotify) -> tuple[str, str]:
         print(f"Please enter a number between 1 and {len(devices)}")
 
 
-def api_call(sp: spotipy.Spotify, fn, *args, max_retries: int = 4, **kwargs):
+def api_call(fn, *args, max_retries: int = 4, **kwargs):
     """Call a Spotify API function with rate-limit retry loop."""
     for attempt in range(max_retries + 1):
         try:
@@ -85,17 +83,6 @@ def api_call(sp: spotipy.Spotify, fn, *args, max_retries: int = 4, **kwargs):
                 time.sleep(wait)
                 continue
             raise
-
-
-def _fetch_all_pages(sp: spotipy.Spotify, first_page: dict) -> list:
-    """Follow pagination until exhausted."""
-    all_items = list(first_page.get("items", []))
-    results = first_page
-    while results.get("next"):
-        results = api_call(sp, sp.next, results)
-        if results:
-            all_items.extend(results.get("items", []))
-    return all_items
 
 
 def parse_tracks(items: list, wrapper_key: str | None = "track") -> list[dict]:
@@ -124,8 +111,12 @@ def fmt_time(ms: int) -> str:
 
 
 def fetch_playlists(sp: spotipy.Spotify) -> list[dict]:
-    first_page = api_call(sp, sp.current_user_playlists, limit=50)
-    all_pl = _fetch_all_pages(sp, first_page)
+    results = api_call(sp.current_user_playlists, limit=50)
+    all_pl = list(results.get("items", []))
+    while results.get("next"):
+        results = api_call(sp.next, results)
+        if results:
+            all_pl.extend(results.get("items", []))
     return [
         {
             "name": pl["name"],
@@ -139,12 +130,12 @@ def fetch_playlists(sp: spotipy.Spotify) -> list[dict]:
 def fetch_playlist_tracks(
     sp: spotipy.Spotify, playlist_id: str, on_page=None,
 ) -> list[dict]:
-    first_page = api_call(sp, sp.playlist_tracks, playlist_id, limit=50)
+    first_page = api_call(sp.playlist_tracks, playlist_id, limit=50)
     return _stream_pages(sp, first_page, "track", on_page)
 
 
 def fetch_liked_tracks(sp: spotipy.Spotify, on_page=None) -> list[dict]:
-    first_page = api_call(sp, sp.current_user_saved_tracks, limit=50)
+    first_page = api_call(sp.current_user_saved_tracks, limit=50)
     return _stream_pages(sp, first_page, "track", on_page)
 
 
@@ -157,7 +148,7 @@ def _stream_pages(sp, first_page, wrapper_key, on_page=None) -> list[dict]:
         on_page(batch)
     results = first_page
     while results.get("next"):
-        results = api_call(sp, sp.next, results)
+        results = api_call(sp.next, results)
         if results:
             batch = parse_tracks(results.get("items", []), wrapper_key=wrapper_key)
             all_tracks.extend(batch)
@@ -167,14 +158,14 @@ def _stream_pages(sp, first_page, wrapper_key, on_page=None) -> list[dict]:
 
 
 def search_tracks(sp: spotipy.Spotify, query: str, limit: int = 25) -> list[dict]:
-    results = api_call(sp, sp.search, q=query, type="track", limit=limit)
+    results = api_call(sp.search, q=query, type="track", limit=limit)
     items = results.get("tracks", {}).get("items", [])
     return parse_tracks(items, wrapper_key=None)
 
 
 def fetch_playback(sp: spotipy.Spotify) -> dict | None:
     try:
-        pb = api_call(sp, sp.current_playback)
+        pb = api_call(sp.current_playback)
         if pb and pb.get("item"):
             return pb
     except Exception:
