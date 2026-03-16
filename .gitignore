@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets & cache
+.env
+.cache
+.spotify_tui_prefs.json
+
+# Local tooling
+.python-version
+uv.lock

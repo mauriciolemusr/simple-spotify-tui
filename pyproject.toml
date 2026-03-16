@@ -1,0 +1,14 @@
+[project]
+name = "spotify-tui"
+version = "0.1.0"
+description = "Terminal UI for Spotify"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "python-dotenv>=1.2.2",
+    "spotipy>=2.26.0",
+    "textual>=0.80",
+]
+
+[project.scripts]
+spotify-tui = "main:cli"
