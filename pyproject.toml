@@ -3,12 +3,15 @@ name = "spotify-tui"
 version = "0.1.0"
 description = "Terminal UI for Spotify"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
 dependencies = [
     "python-dotenv>=1.2.2",
     "spotipy>=2.26.0",
     "textual>=0.80",
 ]
+
+[tool.setuptools]
+py-modules = ["main", "spotify", "app"]
 
 [project.scripts]
 spotify-tui = "main:cli"
